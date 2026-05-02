@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 typedef struct {
     int id;
@@ -19,6 +21,7 @@ typedef struct {
 } Report;
 
 
+/* ====================== FUNCTII GENERATE CU AI (conform cerinței) ====================== */
 int parse_condition(const char *input, char *field, char *op, char *value) {
     char temp[256];
     strncpy(temp, input, sizeof(temp)-1); temp[sizeof(temp)-1] = '\0';
@@ -51,6 +54,9 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
     return 0;
 }
 
+/* ====================== FUNCTII AJUTATOARE ====================== */
+
+// Converteste permisiunile din st_mode in format rwxrwxrwx (cerinta obligatorie)
 void mode_to_string(mode_t mode, char *str) {
     strcpy(str, "---------");
     if (mode & S_IRUSR) str[0] = 'r';
@@ -65,6 +71,7 @@ void mode_to_string(mode_t mode, char *str) {
     str[9] = '\0';
 }
 
+// Verifica daca rolul curent are acces la fisier (folosind stat() si biții reali)
 int has_permission(const char *path, const char *role, int need_write) {
     struct stat st;
     if (stat(path, &st) == -1) return 0;
@@ -77,6 +84,7 @@ int has_permission(const char *path, const char *role, int need_write) {
     return 0;
 }
 
+// Creaza structura directorului cu permisiunile exacte cerute (750, 664, 640, 644)
 void create_district_structure(const char *dist) {
     mkdir(dist, 0750);
     chmod(dist, 0750);
@@ -87,7 +95,6 @@ void create_district_structure(const char *dist) {
     int fd = open(p, O_WRONLY | O_CREAT | O_APPEND, 0664);
     if (fd != -1) { close(fd); chmod(p, 0664); }
 
-    
     sprintf(p, "%s/district.cfg", dist);
     fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0640);
     if (fd != -1) { 
@@ -96,12 +103,12 @@ void create_district_structure(const char *dist) {
         chmod(p, 0640); 
     }
 
-    
     sprintf(p, "%s/logged_district", dist);
     fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd != -1) { close(fd); chmod(p, 0644); }
 }
 
+// Actualizeaza symlink-ul active_reports-<district>
 void update_symlink(const char *dist) {
     char target[256], link[256];
     sprintf(target, "%s/reports.dat", dist);
@@ -110,7 +117,7 @@ void update_symlink(const char *dist) {
     symlink(target, link);
 }
 
-
+// Verifica daca exista symlink-uri rupte (dangling) folosind lstat() - cerinta specifica
 void check_dangling_symlink(const char *dist) {
     char linkname[256];
     sprintf(linkname, "active_reports-%s", dist);
@@ -131,6 +138,9 @@ void log_action(const char *dist, const char *role, const char *user, const char
     }
 }
 
+// ====================== OPERATII ======================
+
+// Adauga un report nou (ambele roluri au voie)
 void add_report(const char *dist, const char *user, const char *role) {
     char p[256]; sprintf(p, "%s/reports.dat", dist);
     if (!has_permission(p, role, 1)) {
@@ -158,10 +168,37 @@ void add_report(const char *dist, const char *user, const char *role) {
         chmod(p, 0664);
     }
     update_symlink(dist);
-    log_action(dist, role, user, "add");
+
+    // --- FAZA 2: Notificarea monitorului ---
+    int monitor_notified = 0;
+    FILE *f_pid = fopen(".monitor_pid", "r");
+    
+    if (f_pid) {
+        pid_t monitor_pid;
+        // Dacă reușim să citim PID-ul
+        if (fscanf(f_pid, "%d", &monitor_pid) == 1) {
+            // Trimitem semnalul SIGUSR1. kill returnează 0 dacă are succes.
+            if (kill(monitor_pid, SIGUSR1) == 0) {
+                monitor_notified = 1;
+            }
+        }
+        fclose(f_pid);
+    }
+
+    // Scriem în log mesajul corespunzător în funcție de succesul notificării
+    char action_msg[256];
+    if (monitor_notified) {
+        strcpy(action_msg, "add (monitor notified)");
+    } else {
+        strcpy(action_msg, "add (monitor could not be informed)");
+    }
+
+    log_action(dist, role, user, action_msg);
+    // ----------------------------------------
     printf("Report added successfully (ID: %d)\n", r.id);
 }
 
+// Listeaza toate rapoartele + informatii despre fisier (cerinta list)
 void list_reports(const char *dist) {
     char p[256]; sprintf(p, "%s/reports.dat", dist);
     struct stat st;
@@ -179,6 +216,7 @@ void list_reports(const char *dist) {
     close(fd);
 }
 
+// Sterge un report folosind lseek + ftruncate (exact cum cere cerinta)
 void remove_report(const char *dist, int id, const char *role, const char *user) {
     if (strcmp(role, "manager") != 0) {
         printf("Only managers can remove reports.\n");
@@ -212,16 +250,14 @@ void remove_report(const char *dist, int id, const char *role, const char *user)
         return;
     }
 
-
+    // Shiftam inregistrarile urmatoare (cerinta stricta)
     Report next;
     off_t read_pos = pos + sizeof(Report); 
     off_t write_pos = pos;                 
 
     while (1) {
         lseek(fd, read_pos, SEEK_SET);
-        if (read(fd, &next, sizeof(Report)) <= 0) {
-            break; 
-        }
+        if (read(fd, &next, sizeof(Report)) <= 0) break;
 
         lseek(fd, write_pos, SEEK_SET);
         write(fd, &next, sizeof(Report));
@@ -238,6 +274,7 @@ void remove_report(const char *dist, int id, const char *role, const char *user)
     printf("Report %d removed.\n", id);
 }
 
+// Actualizeaza threshold cu verificare stricta a permisiunilor 640
 void update_threshold(const char *dist, int new_value, const char *role, const char *user) {
     if (strcmp(role, "manager") != 0) {
         printf("Only managers can update threshold.\n");
@@ -268,6 +305,7 @@ void update_threshold(const char *dist, int new_value, const char *role, const c
     }
 }
 
+// Filtreaza rapoartele conform conditiilor
 void filter_reports(const char *dist, int argc, char **argv) {
     char p[256]; sprintf(p, "%s/reports.dat", dist);
     int fd = open(p, O_RDONLY);
@@ -297,7 +335,49 @@ void filter_reports(const char *dist, int argc, char **argv) {
     if (!printed) printf("No reports match the filter condition.\n");
 }
 
+void remove_district(const char *dist, const char *role) {
+    // Verificăm rolul (doar managerii au voie)
+    if (strcmp(role, "manager") != 0) {
+        printf("Only managers can remove districts.\n");
+        return;
+    }
 
+    // Ștergem link-ul simbolic mai întâi
+    char linkname[256];
+    sprintf(linkname, "active_reports-%s", dist);
+    unlink(linkname);
+
+    // Creăm procesul copil pentru a șterge directorul
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        // Fork a eșuat
+        perror("Eroare la crearea procesului copil (fork)");
+        return;
+    } else if (pid == 0) {
+        // Suntem în procesul copil
+        // Folosim execlp pentru a apela "rm -rf <district>"
+        execlp("rm", "rm", "-rf", dist, NULL);
+        
+        // Dacă execlp are succes, procesul copil se înlocuiește cu "rm".
+        // Dacă ajungem la liniile de mai jos, înseamnă că exec a eșuat.
+        perror("Eroare la executarea comenzii rm");
+        exit(1);
+    } else {
+        // Suntem în procesul părinte (city_manager)
+        // Așteptăm ca procesul copil (rm) să își termine treaba
+        int status;
+        wait(&status);
+        
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            printf("District '%s' removed completely.\n", dist);
+        } else {
+            printf("A aparut o problema la stergerea districtului.\n");
+        }
+    }
+}
+
+// ====================== MAIN ======================
 int main(int argc, char **argv) {
     if (argc < 6) {
         printf("Usage: ./city_manager --role <role> --user <user> <command> <district> [args...]\n");
@@ -320,7 +400,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    check_dangling_symlink(district);
+    check_dangling_symlink(district);   // verificam symlink-uri rupte
     create_district_structure(district);
 
     if (strcmp(command, "add") == 0) {
@@ -333,6 +413,8 @@ int main(int argc, char **argv) {
         update_threshold(district, arg_value, role, user);
     } else if (strcmp(command, "remove_report") == 0 && arg_value != -1) {
         remove_report(district, arg_value, role, user);
+    } else if (strcmp(command, "remove_district") == 0) {
+        remove_district(district, role);
     } else {
         printf("Unknown command: %s\n", command);
     }

@@ -27,3 +27,22 @@
 
 ## 5. Ce am învățat
 Acest exercițiu m-a ajutat să înțeleg limitările funcțiilor distructive din C (precum `strtok`), forțându-mă să folosesc un string temporar pentru a nu altera datele originale din argumentele programului. De asemenea, am consolidat conceptele de pointeri la caractere și importanța conversiei tipurilor de date la runtime (string $\rightarrow$ int/time_t) pentru operații logice de filtrare.
+
+## FAZA 2: Procese (fork/exec) și Semnale (IPC)
+
+### 1. Prompt-urile folosite
+Pentru această fază, am avut nevoie de asistență pentru a implementa comunicarea inter-procese și managementul proceselor copil:
+* **Prompt 1 (fork & exec):** "Cum scriu o funcție în C care folosește `fork()` și familia `exec` pentru a rula comanda externă `rm -rf <dir>` în vederea ștergerii unui director, iar părintele să aștepte terminarea procesului?"
+* **Prompt 2 (semnale):** "Cum scriu un program C care rulează în fundal, își salvează PID-ul într-un fișier, și folosește obligatoriu `sigaction` (fără funcția veche `signal()`) pentru a prinde `SIGUSR1` și `SIGINT`?"
+* **Prompt 3 (IPC/kill):** "Cum citesc un PID dintr-un fișier de tip text și trimit un semnal `SIGUSR1` către acel proces din alt program C?"
+
+### 2. Ce a generat AI-ul
+* **Pentru `remove_district`:** AI-ul a generat structura standard de `fork()`, folosind `execlp("rm", "rm", "-rf", dist, NULL)` în procesul copil și `wait(&status)` în procesul părinte.
+* **Pentru `monitor_reports`:** A generat scheletul programului cu buclă infinită (`while(running) { pause(); }`) și configurarea handlere-lor de semnal folosind structura `sigaction` și `sigemptyset`.
+* **Pentru comunicare:** A generat logica cu `fscanf` pentru citirea PID-ului și apelul `kill(monitor_pid, SIGUSR1)`.
+
+### 3. Ce am modificat, adaptat și învățat
+Integrarea codului a necesitat rezolvarea unor subtilități de programare la nivel de sistem:
+1. **Problema `sigaction` și VS Code:** Editorul meu nu recunoștea definițiile structurilor POSIX (precum `sigaction`) pentru că folosea un standard C de bază. Am învățat că trebuie să adaug macro-ul `#define _XOPEN_SOURCE 700` la începutul fișierului `monitor_reports.c` pentru a forța expunerea API-urilor de Linux.
+2. **Funcții Async-Signal-Safe:** AI-ul mi-a explicat că folosirea `printf()` în interiorul handler-elor de semnal (ex: la `handle_sigint`) este periculoasă deoarece nu este async-signal-safe. Ca urmare, am implementat afișarea folosind direct apelul de sistem `write(STDOUT_FILENO, ...)`.
+3. **Optimizarea I/O:** Când am integrat `remove_district` în `main`, am realizat că programul meu recrea directorul (prin apelarea `create_district_structure`) chiar înainte să îl șteargă. Am modificat fluxul cu un `if` pentru a apela inițializarea doar dacă comanda diferă de `remove_district`, scutind operații inutile pe disc.
