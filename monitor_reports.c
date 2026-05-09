@@ -41,7 +41,7 @@ int main() {
 
     struct sigaction sa_int, sa_usr1;
 
-// Configurăm acțiunea pentru SIGINT cu verificare de erori
+    // Configurăm acțiunea pentru SIGINT cu verificare de erori
     sa_int.sa_handler = handle_sigint;
     sigemptyset(&sa_int.sa_mask);
     sa_int.sa_flags = 0;

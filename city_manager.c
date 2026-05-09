@@ -142,7 +142,9 @@ void log_action(const char *dist, const char *role, const char *user, const char
 
 // Adauga un report nou (ambele roluri au voie)
 void add_report(const char *dist, const char *user, const char *role) {
-    char p[256]; sprintf(p, "%s/reports.dat", dist);
+    char p[256]; 
+    snprintf(p, sizeof(p), "%s/reports.dat", dist); // UPDATE 1: folosim snprintf pentru securitate
+    
     if (!has_permission(p, role, 1)) {
         printf("Access denied for add.\n");
         return;
@@ -156,7 +158,17 @@ void add_report(const char *dist, const char *user, const char *role) {
     printf("X: "); scanf("%lf", &r.lat);
     printf("Y: "); scanf("%lf", &r.lon);
     printf("Category: "); scanf("%29s", r.category);
-    printf("Severity (1-3): "); scanf("%d", &r.severity);
+    
+    // --- UPDATE 2: Validare stricta pentru Severity ---
+    do {
+        printf("Severity (1-3): "); 
+        scanf("%d", &r.severity);
+        if (r.severity < 1 || r.severity > 3) {
+            printf("Eroare: Severitatea trebuie sa fie obligatoriu 1, 2 sau 3!\n");
+        }
+    } while (r.severity < 1 || r.severity > 3);
+    // ------------------------------------------------
+
     getchar();
     printf("Description: "); fgets(r.description, 95, stdin);
     r.description[strcspn(r.description, "\n")] = '\0';
@@ -175,11 +187,13 @@ void add_report(const char *dist, const char *user, const char *role) {
     
     if (f_pid) {
         pid_t monitor_pid;
-        // Dacă reușim să citim PID-ul
-        if (fscanf(f_pid, "%d", &monitor_pid) == 1) {
-            // Trimitem semnalul SIGUSR1. kill returnează 0 dacă are succes.
+        // UPDATE 3: Verificare suplimentara pentru PID valid (> 0)
+        if (fscanf(f_pid, "%d", &monitor_pid) == 1 && monitor_pid > 0) {
+            // Trimitem semnalul SIGUSR1
             if (kill(monitor_pid, SIGUSR1) == 0) {
                 monitor_notified = 1;
+            } else {
+                perror("Eroare la trimiterea semnalului catre monitor");
             }
         }
         fclose(f_pid);
@@ -196,24 +210,6 @@ void add_report(const char *dist, const char *user, const char *role) {
     log_action(dist, role, user, action_msg);
     // ----------------------------------------
     printf("Report added successfully (ID: %d)\n", r.id);
-}
-
-// Listeaza toate rapoartele + informatii despre fisier (cerinta list)
-void list_reports(const char *dist) {
-    char p[256]; sprintf(p, "%s/reports.dat", dist);
-    struct stat st;
-    if (stat(p, &st) == -1) { printf("No reports yet.\n"); return; }
-
-    char perm[10]; mode_to_string(st.st_mode, perm);
-    printf("reports.dat %s Size: %ld Modified: %s", perm, st.st_size, ctime(&st.st_mtime));
-
-    int fd = open(p, O_RDONLY);
-    if (fd == -1) return;
-    Report r;
-    while (read(fd, &r, sizeof(Report)) == sizeof(Report)) {
-        printf("ID: %d | %s | Sev: %d | Insp: %s\n", r.id, r.category, r.severity, r.inspector_name);
-    }
-    close(fd);
 }
 
 // Sterge un report folosind lseek + ftruncate (exact cum cere cerinta)
@@ -336,36 +332,26 @@ void filter_reports(const char *dist, int argc, char **argv) {
 }
 
 void remove_district(const char *dist, const char *role) {
-    // Verificăm rolul (doar managerii au voie)
     if (strcmp(role, "manager") != 0) {
         printf("Only managers can remove districts.\n");
         return;
     }
 
-    // Ștergem link-ul simbolic mai întâi
     char linkname[256];
     sprintf(linkname, "active_reports-%s", dist);
     unlink(linkname);
 
-    // Creăm procesul copil pentru a șterge directorul
     pid_t pid = fork();
 
     if (pid < 0) {
-        // Fork a eșuat
         perror("Eroare la crearea procesului copil (fork)");
         return;
     } else if (pid == 0) {
-        // Suntem în procesul copil
-        // Folosim execlp pentru a apela "rm -rf <district>"
         execlp("rm", "rm", "-rf", dist, NULL);
         
-        // Dacă execlp are succes, procesul copil se înlocuiește cu "rm".
-        // Dacă ajungem la liniile de mai jos, înseamnă că exec a eșuat.
         perror("Eroare la executarea comenzii rm");
         exit(1);
     } else {
-        // Suntem în procesul părinte (city_manager)
-        // Așteptăm ca procesul copil (rm) să își termine treaba
         int status;
         wait(&status);
         
@@ -400,8 +386,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    check_dangling_symlink(district);   // verificam symlink-uri rupte
-    create_district_structure(district);
+    if (strcmp(command, "remove_district") != 0) {
+        check_dangling_symlink(district);
+        create_district_structure(district);
+    }
 
     if (strcmp(command, "add") == 0) {
         add_report(district, user, role);
