@@ -7,58 +7,65 @@
 #include <string.h>
 #include <sys/types.h>
 
-
-// Variabilă globală pentru a ține programul în viață
 volatile sig_atomic_t running = 1;
 
-// Handler pentru CTRL+C
+// Handler pentru CTRL+C (SIGINT)
 void handle_sigint(int sig) {
-    const char *msg = "\n[Monitor] Received SIGINT. Shutting down...\n";
+    const char *msg = "[INFO] Received SIGINT. Shutting down...\n";
     write(STDOUT_FILENO, msg, strlen(msg));
-    
     unlink(".monitor_pid");
     running = 0;
 }
 
-// Handler pentru semnalul că s-a adăugat un raport nou 
+// Handler pentru raport nou (SIGUSR1)
 void handle_sigusr1(int sig) {
-    const char *msg = "[Monitor] Alert: A new report has been added!\n";
+    const char *msg = "[ALERT] A new report has been added!\n";
     write(STDOUT_FILENO, msg, strlen(msg));
 }
 
 int main() {
+    // --- FAZA 3: Verificare dacă mai rulează un monitor ---
+    FILE *check_f = fopen(".monitor_pid", "r");
+    if (check_f) {
+        pid_t existing_pid;
+        if (fscanf(check_f, "%d", &existing_pid) == 1) {
+            // Trimitem mesajul de eroare (care va fi prins de pipe)
+            printf("[ERROR] Monitor already running with PID: %d\n", existing_pid);
+            fflush(stdout); // Foarte important la pipes ca textul sa plece imediat!
+            fclose(check_f);
+            return 1; // Ieșim
+        }
+        fclose(check_f);
+    }
+    // -------------------------------------------------------
+
+    // 1. Dacă am ajuns aici, suntem singurul monitor. Salvăm PID-ul.
     pid_t pid = getpid();
     FILE *f = fopen(".monitor_pid", "w");
     if (!f) {
-        perror("Eroare la crearea fișierului .monitor_pid");
+        perror("[ERROR] Eroare la crearea fișierului .monitor_pid");
         return 1;
     }
     fprintf(f, "%d\n", pid);
     fclose(f);
     
-    printf("[Monitor] Started successfully with PID: %d\n", pid);
-    printf("[Monitor] Waiting for signals...\n");
+    printf("[INFO] Started successfully with PID: %d\n", pid);
+    fflush(stdout);
 
+    // 2. Setăm handlerele folosind sigaction
     struct sigaction sa_int, sa_usr1;
 
-    // Configurăm acțiunea pentru SIGINT cu verificare de erori
     sa_int.sa_handler = handle_sigint;
     sigemptyset(&sa_int.sa_mask);
     sa_int.sa_flags = 0;
-    if (sigaction(SIGINT, &sa_int, NULL) == -1) {
-        perror("Eroare la setarea handler-ului pentru SIGINT");
-        return 1;
-    }
+    sigaction(SIGINT, &sa_int, NULL);
 
-    // Configurăm acțiunea pentru SIGUSR1 cu verificare de erori
     sa_usr1.sa_handler = handle_sigusr1;
     sigemptyset(&sa_usr1.sa_mask);
     sa_usr1.sa_flags = 0;
-    if (sigaction(SIGUSR1, &sa_usr1, NULL) == -1) {
-        perror("Eroare la setarea handler-ului pentru SIGUSR1");
-        return 1;
-    }
+    sigaction(SIGUSR1, &sa_usr1, NULL);
 
+    // 3. Buclă infinită
     while (running) {
         pause(); 
     }
