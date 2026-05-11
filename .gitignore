@@ -1,0 +1,16 @@
+# Executabile compilate
+city_manager
+monitor_reports
+scorer
+city_hub
+
+# Arhive
+*.tar.gz
+
+# Fisiere temporare si gunoaie
+.monitor_pid
+=:2
+p
+
+# Fisiere de configurare editor (nu trebuie puse pe Git)
+.vscode/
